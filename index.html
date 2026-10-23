@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Smart Budget - DWM Project</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen">
+  <div class="max-w-6xl mx-auto py-8 px-4">
+    <header class="mb-8 border-b pb-4">
+      <h1 class="text-3xl font-extrabold text-blue-900">DWM Mini Project: Budget & Spend Risk Profiler</h1>
+      <p class="text-sm text-slate-500 mt-1">Implements Custom Naïve Bayes Classifier and Euclidean K-Means (No ML Libraries)</p>
+    </header>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <!-- Input Transaction Form -->
+      <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+        <h2 class="text-lg font-bold text-slate-800 mb-4">Add Transaction</h2>
+        <form id="txForm" class="space-y-4">
+          <div>
+            <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Category</label>
+            <input type="text" id="category" required placeholder="e.g. Dining, Transit" class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" />
+          </div>
+          <div>
+            <label class="block text-xs font-semibold uppercase text-slate-500 mb-1">Amount (₹)</label>
+            <input type="number" id="amount" required step="10" placeholder="e.g. 850" class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" />
+          </div>
+          <div class="flex items-center gap-2">
+            <input type="checkbox" id="is_weekend" class="rounded text-blue-600 focus:ring-blue-500 h-4 w-4" />
+            <label for="is_weekend" class="text-sm text-slate-600">Weekend Expenditure</label>
+          </div>
+          <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 rounded-lg transition duration-150">
+            Mine & Log Expense
+          </button>
+        </form>
+
+        <div id="predictionBadge" class="mt-4 hidden p-3 rounded-lg text-center text-sm font-semibold"></div>
+      </div>
+
+      <!-- K-Means Clusters View -->
+      <div class="lg:col-span-2 bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+        <div class="flex justify-between items-center mb-4">
+          <h2 class="text-lg font-bold text-slate-800">K-Means Cluster Centroids (Mean & Distance)</h2>
+          <button onclick="fetchClusters()" class="text-xs bg-slate-100 hover:bg-slate-200 px-3 py-1.5 rounded-md font-medium text-slate-600">Recompute</button>
+        </div>
+        <div id="clustersContainer" class="grid grid-cols-3 gap-3 mb-4"></div>
+        <div class="h-56">
+          <canvas id="expenseChart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- Transaction Table -->
+    <div class="mt-8 bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+      <div class="px-6 py-4 border-b">
+        <h3 class="font-bold text-slate-800">Mined Transaction Log</h3>
+      </div>
+      <table class="w-full text-left text-sm">
+        <thead class="bg-slate-50 text-slate-500 text-xs uppercase">
+          <tr>
+            <th class="px-6 py-3">ID</th>
+            <th class="px-6 py-3">Category</th>
+            <th class="px-6 py-3">Amount</th>
+            <th class="px-6 py-3">Weekend?</th>
+            <th class="px-6 py-3">Mined Risk Profile</th>
+          </tr>
+        </thead>
+        <tbody id="txBody" class="divide-y divide-slate-100"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    let chartInstance = null;
+
+    async function loadData() {
+      const res = await fetch('/api/transactions');
+      const data = await res.json();
+      const tbody = document.getElementById('txBody');
+      tbody.innerHTML = '';
+      
+      data.forEach(t => {
+        const badgeColor = t.risk_label === 'High_Risk' ? 'bg-red-100 text-red-700' : (t.risk_label === 'Moderate_Risk' ? 'bg-yellow-100 text-yellow-700' : 'bg-emerald-100 text-emerald-700');
+        tbody.innerHTML += `
+          <tr>
+            <td class="px-6 py-3 font-mono text-slate-400">#${t.tx_id}</td>
+            <td class="px-6 py-3 font-medium text-slate-800">${t.category}</td>
+            <td class="px-6 py-3 font-semibold text-slate-700">₹${t.amount}</td>
+            <td class="px-6 py-3 text-slate-500">${t.is_weekend ? 'Yes' : 'No'}</td>
+            <td class="px-6 py-3"><span class="px-2.5 py-1 text-xs rounded-full font-semibold ${badgeColor}">${t.risk_label}</span></td>
+          </tr>
+        `;
+      });
+      fetchClusters();
+    }
+
+    async function fetchClusters() {
+      const res = await fetch('/api/mining/clusters');
+      const result = await res.json();
+      const container = document.getElementById('clustersContainer');
+      container.innerHTML = '';
+
+      Object.entries(result.clusters).forEach(([name, points], idx) => {
+        container.innerHTML += `
+          <div class="bg-slate-50 p-3 rounded-lg border border-slate-200">
+            <span class="text-xs text-slate-400 font-semibold block uppercase">Cluster ${idx+1}</span>
+            <span class="text-base font-bold text-blue-700">${name}</span>
+            <span class="text-xs text-slate-500 block mt-1">${points.length} expenses mapped</span>
+          </div>
+        `;
+      });
+      renderChart(result.centroids);
+    }
+
+    function renderChart(centroids) {
+      const ctx = document.getElementById('expenseChart').getContext('2d');
+      if (chartInstance) chartInstance.destroy();
+      chartInstance = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: ['Frugal / Essential', 'Balanced Spend', 'High Risk Spender'],
+          datasets: [{
+            label: 'Centroid Values (Arithmetic Mean in ₹)',
+            data: centroids,
+            backgroundColor: ['#10B981', '#F59E0B', '#EF4444']
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: { y: { beginAtZero: true, title: { display: true, text: 'Amount (₹)' } } }
+        }
+      });
+    }
+
+    document.getElementById('txForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const payload = {
+        category: document.getElementById('category').value,
+        amount: parseFloat(document.getElementById('amount').value),
+        is_weekend: document.getElementById('is_weekend').checked ? 1 : 0
+      };
+
+      const res = await fetch('/api/transactions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+
+      const badge = document.getElementById('predictionBadge');
+      badge.classList.remove('hidden', 'bg-red-100', 'text-red-700', 'bg-green-100', 'text-green-700', 'bg-yellow-100', 'text-yellow-700');
+      if (data.predicted_risk === 'High_Risk') {
+        badge.classList.add('bg-red-100', 'text-red-700');
+      } else if (data.predicted_risk === 'Moderate_Risk') {
+        badge.classList.add('bg-yellow-100', 'text-yellow-700');
+      } else {
+        badge.classList.add('bg-emerald-100', 'text-emerald-700');
+      }
+      badge.innerText = `Naïve Bayes Classified as: ${data.predicted_risk}`;
+      e.target.reset();
+      loadData();
+    });
+
+    window.onload = loadData;
+  </script>
+</body>
+</html>
